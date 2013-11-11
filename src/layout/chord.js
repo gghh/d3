@@ -6,93 +6,177 @@ d3.layout.chord = function() {
   var chord = {},
       chords,
       groups,
-      matrix,
-      n,
+      connections,
       padding = 0,
       sortGroups,
       sortSubgroups,
       sortChords;
 
   function relayout() {
-    var subgroups = {},
-        groupSums = [],
-        groupIndex = d3.range(n),
+    var subgroups     = [],
+        groupSums     = {},
         subgroupIndex = [],
+	polygons      = [],
+	poly          = {edges:    [],
+		         vertices: {}},
+        samebase      = [],
+        ngroups       = 0,
+        groupIndex,
+        pt1,
+        pt2,
+        pt,
+	ep,
         k,
         x,
         x0,
         i,
-        j;
+	j,
+	h;
 
     chords = [];
     groups = [];
 
-    // Compute the sum.
-    k = 0, i = -1; while (++i < n) {
-      x = 0, j = -1; while (++j < n) {
-        x += matrix[i][j];
+    k = 0, i = -1; while (++i < connections.length) {
+      j = -1; while (++j < connections[i].length) {
+	ep = connections[i][j].group;
+	if (ep in groupSums) {
+	  groupSums[ep] += connections[i][j].value;
+	} else {
+	  groupSums[ep] = connections[i][j].value;
+	  ++ngroups;
+	}
+	k += connections[i][j].value;
       }
-      groupSums.push(x);
-      subgroupIndex.push(d3.range(n));
-      k += x;
     }
 
-    // Sort groups…
+    groupIndex = d3.range(ngroups);
+      
     if (sortGroups) {
       groupIndex.sort(function(a, b) {
         return sortGroups(groupSums[a], groupSums[b]);
       });
     }
 
+    k = (2 * π - padding * ngroups) / k;
+
+    i = -1; while (++i < connections.length) {
+      // If the current connections element is a singleton,
+      // skip this altogether: no chord, it's empty space in the segment.
+      if (connections[i].length > 1) {
+	j = 0; while (++j < connections[i].length) {
+	  // the polygon keeps track of links which share groups.
+	  poly.edges.push({
+			     source: connections[i][j-1],
+			     target: connections[i][j]
+			   });
+	  // the only purpose of poly.vertices is later lookup,
+	  // so I use it as a set. I convert vertices ID to string with + ''
+	  poly.vertices[connections[i][j-1].group + ''] = '';
+	}
+	poly.vertices[connections[i][j-1].group + ''] = '';
+	// close the polygon, unless it has only one side.
+	if (poly.edges.length > 1) {
+	poly.edges.push({
+        		   source: connections[i][0],
+			   target: connections[i][j-1]
+			 });
+	}
+	polygons.push(poly);
+	poly = {edges: [],
+		vertices: {}};
+      }
+    };
+
+    i = -1; while (++i < ngroups) {
+      subgroups[i] = [];
+      j = -1; while (++j < polygons.length) {
+	samebase = {'ribbons': [],
+		    'basevalue': 0};
+        h = -1; while (++h < polygons[j].edges.length) {
+	  if (polygons[j].edges[h].source.group === i) {
+	      samebase.ribbons.push(polygons[j].edges[h]);
+	      samebase.basevalue = polygons[j].edges[h].source.value;
+	  } else if (polygons[j].edges[h].target.group === i) {
+	      samebase.ribbons.push(polygons[j].edges[h]);
+	      samebase.basevalue = polygons[j].edges[h].target.value;
+	  }
+	}
+	subgroups[i].push(samebase);
+      }
+    }
+
+    // Now I handle the empty spaces, i.e. singletons in connections
+    i = -1; while (++i < connections.length) {
+      if (connections[i].length === 1) {
+	  subgroups[connections[i][0].group]
+            .push({'ribbons': [],
+		   'basevalue': connections[i][0].value
+		  });
+      }
+    }
+
+    // last pass on subgroups to create indices
+    i = -1; while (++i < ngroups) {
+      subgroupIndex.push(d3.range(subgroups[i].length));
+    }
+
     // Sort subgroups…
     if (sortSubgroups) {
       subgroupIndex.forEach(function(d, i) {
         d.sort(function(a, b) {
-          return sortSubgroups(matrix[i][a], matrix[i][b]);
+          return sortSubgroups(subgroups[i][a].basevalue,
+			       subgroups[i][b].basevalue);
         });
       });
     }
 
-    // Convert the sum to scaling factor for [0, 2pi].
-    // TODO Allow start and end angle to be specified.
-    // TODO Allow padding to be specified as percentage?
-    k = (τ - padding * n) / k;
-
-    // Compute the start and end angle for each group and subgroup.
-    // Note: Opera has a bug reordering object literal properties!
-    x = 0, i = -1; while (++i < n) {
-      x0 = x, j = -1; while (++j < n) {
-        var di = groupIndex[i],
-            dj = subgroupIndex[di][j],
-            v = matrix[di][dj],
-            a0 = x,
+    x = 0, i = -1; while (++i < ngroups) {
+      var di = groupIndex[i];
+      x0 = x, j = -1; while (++j < subgroupIndex[di].length) {
+        var dj = subgroupIndex[di][j],
+            // take numerical ID as subgroup key
+	    v = subgroups[di][dj].basevalue,
+	    a0 = x,
             a1 = x += v * k;
-        subgroups[di + "-" + dj] = {
-          index: di,
-          subindex: dj,
-          startAngle: a0,
-          endAngle: a1,
-          value: v
-        };
+        // here you should directly modify the "edges",
+	// then access them back via polygons
+	// I now extend polygons elements with new properties.
+	h = -1; while(++h < subgroups[di][dj].ribbons.length) {
+	  // pick the right end of the edge to be augmented
+	  pt1 = subgroups[di][dj].ribbons[h].source;
+	  pt2 = subgroups[di][dj].ribbons[h].target;
+	  if (pt1.group === di) { pt = pt1; }
+	  else { pt = pt2; }
+	  // Only one of the two groups per iteration
+	  // is augmented with the 'geometry' property.
+	  // I will read this object back from the 'polygons' object.
+	  pt['geometry'] = {
+	      index: di,
+	      subindex: dj,
+	      startAngle: a0,
+	      endAngle: a1,
+	      value: v
+          };
+	}
       }
       groups[di] = {
-        index: di,
-        startAngle: x0,
-        endAngle: x,
-        value: (x - x0) / k
+	  index: di,
+          startAngle: x0,
+          endAngle: x,
+          value: (x - x0) / k
       };
       x += padding;
     }
 
     // Generate chords for each (non-empty) subgroup-subgroup link.
-    i = -1; while (++i < n) {
-      j = i - 1; while (++j < n) {
-        var source = subgroups[i + "-" + j],
-            target = subgroups[j + "-" + i];
+    i = -1; while (++i < polygons.length) {
+      j = -1; while (++j < polygons[i].edges.length) {
+        var source = polygons[i].edges[j].source.geometry,
+            target = polygons[i].edges[j].target.geometry;
         if (source.value || target.value) {
           chords.push(source.value < target.value
-              ? {source: target, target: source}
-              : {source: source, target: target});
+            ? {source: target, target: source, groups: polygons[i].vertices}
+            : {source: source, target: target, groups: polygons[i].vertices});
         }
       }
     }
@@ -108,9 +192,9 @@ d3.layout.chord = function() {
     });
   }
 
-  chord.matrix = function(x) {
-    if (!arguments.length) return matrix;
-    n = (matrix = x) && matrix.length;
+  chord.connections = function(x) {
+    if (!arguments.length) return connections;
+    connections = x;
     chords = groups = null;
     return chord;
   };
