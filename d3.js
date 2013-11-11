@@ -2097,7 +2097,7 @@ d3 = function() {
     d3_timer_queueTail = t0;
     return time;
   }
-  var d3_format_decimalPoint = ".", d3_format_thousandsSeparator = ",", d3_format_grouping = [ 3, 3 ], d3_format_currencySymbol = "$";
+  var d3_format_decimalPoint = ".", d3_format_thousandsSeparator = "", d3_format_grouping = [ -1 ], d3_format_currencySymbol = "";
   var d3_formatPrefixes = [ "y", "z", "a", "f", "p", "n", "µ", "m", "", "k", "M", "G", "T", "P", "E", "Z", "Y" ].map(d3_formatPrefix);
   d3.formatPrefix = function(value, precision) {
     var i = 0;
@@ -5524,46 +5524,125 @@ d3 = function() {
     return sharedNode;
   }
   d3.layout.chord = function() {
-    var chord = {}, chords, groups, matrix, n, padding = 0, sortGroups, sortSubgroups, sortChords;
+    var chord = {}, chords, groups, connections, padding = 0, sortGroups, sortSubgroups, sortChords;
     function relayout() {
-      var subgroups = {}, groupSums = [], groupIndex = d3.range(n), subgroupIndex = [], k, x, x0, i, j;
+      var subgroups = [], groupSums = {}, subgroupIndex = [], polygons = [], poly = {
+        edges: [],
+        vertices: {}
+      }, samebase = [], ngroups = 0, groupIndex, pt1, pt2, pt, ep, k, x, x0, i, j, h;
       chords = [];
       groups = [];
       k = 0, i = -1;
-      while (++i < n) {
-        x = 0, j = -1;
-        while (++j < n) {
-          x += matrix[i][j];
+      while (++i < connections.length) {
+        j = -1;
+        while (++j < connections[i].length) {
+          ep = connections[i][j].group;
+          if (ep in groupSums) {
+            groupSums[ep] += connections[i][j].value;
+          } else {
+            groupSums[ep] = connections[i][j].value;
+            ++ngroups;
+          }
+          k += connections[i][j].value;
         }
-        groupSums.push(x);
-        subgroupIndex.push(d3.range(n));
-        k += x;
       }
+      groupIndex = d3.range(ngroups);
       if (sortGroups) {
         groupIndex.sort(function(a, b) {
           return sortGroups(groupSums[a], groupSums[b]);
         });
       }
+      k = (2 * π - padding * ngroups) / k;
+      i = -1;
+      while (++i < connections.length) {
+        if (connections[i].length > 1) {
+          j = 0;
+          while (++j < connections[i].length) {
+            poly.edges.push({
+              source: connections[i][j - 1],
+              target: connections[i][j]
+            });
+            poly.vertices[connections[i][j - 1].group + ""] = "";
+          }
+          poly.vertices[connections[i][j - 1].group + ""] = "";
+          if (poly.edges.length > 1) {
+            poly.edges.push({
+              source: connections[i][0],
+              target: connections[i][j - 1]
+            });
+          }
+          polygons.push(poly);
+          poly = {
+            edges: [],
+            vertices: {}
+          };
+        }
+      }
+      i = -1;
+      while (++i < ngroups) {
+        subgroups[i] = [];
+        j = -1;
+        while (++j < polygons.length) {
+          samebase = {
+            ribbons: [],
+            basevalue: 0
+          };
+          h = -1;
+          while (++h < polygons[j].edges.length) {
+            if (polygons[j].edges[h].source.group === i) {
+              samebase.ribbons.push(polygons[j].edges[h]);
+              samebase.basevalue = polygons[j].edges[h].source.value;
+            } else if (polygons[j].edges[h].target.group === i) {
+              samebase.ribbons.push(polygons[j].edges[h]);
+              samebase.basevalue = polygons[j].edges[h].target.value;
+            }
+          }
+          subgroups[i].push(samebase);
+        }
+      }
+      i = -1;
+      while (++i < connections.length) {
+        if (connections[i].length === 1) {
+          subgroups[connections[i][0].group].push({
+            ribbons: [],
+            basevalue: connections[i][0].value
+          });
+        }
+      }
+      i = -1;
+      while (++i < ngroups) {
+        subgroupIndex.push(d3.range(subgroups[i].length));
+      }
       if (sortSubgroups) {
         subgroupIndex.forEach(function(d, i) {
           d.sort(function(a, b) {
-            return sortSubgroups(matrix[i][a], matrix[i][b]);
+            return sortSubgroups(subgroups[i][a].basevalue, subgroups[i][b].basevalue);
           });
         });
       }
-      k = (τ - padding * n) / k;
       x = 0, i = -1;
-      while (++i < n) {
+      while (++i < ngroups) {
+        var di = groupIndex[i];
         x0 = x, j = -1;
-        while (++j < n) {
-          var di = groupIndex[i], dj = subgroupIndex[di][j], v = matrix[di][dj], a0 = x, a1 = x += v * k;
-          subgroups[di + "-" + dj] = {
-            index: di,
-            subindex: dj,
-            startAngle: a0,
-            endAngle: a1,
-            value: v
-          };
+        while (++j < subgroupIndex[di].length) {
+          var dj = subgroupIndex[di][j], v = subgroups[di][dj].basevalue, a0 = x, a1 = x += v * k;
+          h = -1;
+          while (++h < subgroups[di][dj].ribbons.length) {
+            pt1 = subgroups[di][dj].ribbons[h].source;
+            pt2 = subgroups[di][dj].ribbons[h].target;
+            if (pt1.group === di) {
+              pt = pt1;
+            } else {
+              pt = pt2;
+            }
+            pt["geometry"] = {
+              index: di,
+              subindex: dj,
+              startAngle: a0,
+              endAngle: a1,
+              value: v
+            };
+          }
         }
         groups[di] = {
           index: di,
@@ -5574,17 +5653,19 @@ d3 = function() {
         x += padding;
       }
       i = -1;
-      while (++i < n) {
-        j = i - 1;
-        while (++j < n) {
-          var source = subgroups[i + "-" + j], target = subgroups[j + "-" + i];
+      while (++i < polygons.length) {
+        j = -1;
+        while (++j < polygons[i].edges.length) {
+          var source = polygons[i].edges[j].source.geometry, target = polygons[i].edges[j].target.geometry;
           if (source.value || target.value) {
             chords.push(source.value < target.value ? {
               source: target,
-              target: source
+              target: source,
+              groups: polygons[i].vertices
             } : {
               source: source,
-              target: target
+              target: target,
+              groups: polygons[i].vertices
             });
           }
         }
@@ -5596,9 +5677,9 @@ d3 = function() {
         return sortChords((a.source.value + a.target.value) / 2, (b.source.value + b.target.value) / 2);
       });
     }
-    chord.matrix = function(x) {
-      if (!arguments.length) return matrix;
-      n = (matrix = x) && matrix.length;
+    chord.connections = function(x) {
+      if (!arguments.length) return connections;
+      connections = x;
       chords = groups = null;
       return chord;
     };
@@ -8673,7 +8754,7 @@ d3 = function() {
     }
   };
   var d3_time_prototype = Date.prototype;
-  var d3_time_formatDateTime = "%a %b %e %X %Y", d3_time_formatDate = "%m/%d/%Y", d3_time_formatTime = "%H:%M:%S";
+  var d3_time_formatDateTime = "%a %b %e %H:%M:%S %Y", d3_time_formatDate = "%m/%d/%y", d3_time_formatTime = "%H:%M:%S";
   var d3_time_days = [ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" ], d3_time_dayAbbreviations = [ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" ], d3_time_months = [ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" ], d3_time_monthAbbreviations = [ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" ];
   function d3_time_interval(local, step, number) {
     function round(date) {
